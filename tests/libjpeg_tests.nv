@@ -1,0 +1,236 @@
+// API tests for the libturbojpeg bindings.
+//
+// Every test below calls into the C library, so the suite needs
+// libturbojpeg installed and linked.  `novo pkg build` type-checks the
+// declarations without it; `novo test` runs them and does not.
+//
+// Every test works in memory over an image the suite draws itself, so
+// the suite reads and writes nothing and needs no privileges.
+
+use std.test
+use libjpeg
+
+// `TJPF_RGB` and `TJPF_GRAY`, two TurboJPEG pixel formats.
+const PF_RGB: Int = 0
+const PF_GRAY: Int = 6
+
+// The bytes one pixel of each takes.
+const RGB_BYTES: Int = 3
+const GRAY_BYTES: Int = 1
+
+// `TJSAMP_444`, `TJSAMP_420` and `TJSAMP_GRAY`, three chrominance
+// subsamplings.
+const SAMP_444: Int = 0
+const SAMP_420: Int = 2
+const SAMP_GRAY: Int = 3
+
+// `TJCS_YCbCr`, the colour space a colour JPEG image is stored in.
+const CS_YCBCR: Int = 1
+
+// `TJFLAG_NOREALLOC`: keep the output buffer the caller supplied.
+const FLAG_NOREALLOC: Int = 1024
+
+// The size of the picture every test compresses, and the quality.
+const WIDTH: Int = 32
+const HEIGHT: Int = 16
+const QUALITY: Int = 90
+
+// The padding a planar YUV image's rows are aligned to.
+const PAD: Int = 4
+
+// Draw a picture: `WIDTH` by `HEIGHT` pixels, three bytes each, in a
+// pattern that is neither flat nor noise, so it compresses and the
+// result is not a single colour.
+fn picture() -> Int
+    let n = WIDTH * HEIGHT * RGB_BYTES
+    let buf = ptr.alloc(n)
+    for i in 0..n
+        ptr.write_i32(buf + i, i % 251)
+    return buf
+
+@test
+fn test_a_picture_compresses_and_decompresses() [io, ffi]
+    test.case("tjInitCompress, tjBufSize, tjCompress2, tjInitDecompress, tjDecompressHeader3, tjDecompress2, tjDestroy")
+    let comp = libjpeg.tj_init_compress()
+    test.assert(comp != 0)
+    let src = picture()
+    // A buffer of the bound never overflows, whatever the picture.
+    let bound = libjpeg.tj_buf_size(WIDTH, HEIGHT, SAMP_420)
+    test.assert(bound > 0)
+    let out = libjpeg.tj_alloc(bound)
+    test.assert(out != 0)
+    // The slot holds the address of the output buffer, and the flag
+    // 1024 tells the library to keep it rather than reallocate.
+    let buf_slot = ptr.alloc_word()
+    ptr.write_word(buf_slot, out)
+    let size_slot = ptr.alloc_word()
+    ptr.write_word(size_slot, bound)
+    let rc = libjpeg.tj_compress2(comp, src, WIDTH, 0, HEIGHT, PF_RGB, buf_slot, size_slot,
+                                  SAMP_420, QUALITY, FLAG_NOREALLOC) as i32
+    test.assert(rc == 0)
+    let jpeg_size = ptr.read_word(size_slot)
+    test.assert(jpeg_size > 0)
+    test.assert(jpeg_size <= bound)
+
+    let decomp = libjpeg.tj_init_decompress()
+    test.assert(decomp != 0)
+    // The header reports the size the picture was compressed at.
+    let w = ptr.alloc_word()
+    let h = ptr.alloc_word()
+    let samp = ptr.alloc_word()
+    let cs = ptr.alloc_word()
+    test.assert(libjpeg.tj_decompress_header3(decomp, out, jpeg_size, w, h, samp, cs) == 0)
+    test.assert(ptr.read_word(w) == WIDTH)
+    test.assert(ptr.read_word(h) == HEIGHT)
+    test.assert(ptr.read_word(samp) == SAMP_420)
+    test.assert(ptr.read_word(cs) == CS_YCBCR)
+    // And back out as pixels, at the size the header reports.
+    let back = ptr.alloc(WIDTH * HEIGHT * RGB_BYTES)
+    test.assert(libjpeg.tj_decompress2(decomp, out, jpeg_size, back, 0, 0, 0, PF_RGB, 0) == 0)
+    ptr.free(back)
+    ptr.free(cs)
+    ptr.free(samp)
+    ptr.free(h)
+    ptr.free(w)
+    test.assert(libjpeg.tj_destroy(decomp) == 0)
+    ptr.free(size_slot)
+    ptr.free(buf_slot)
+    libjpeg.tj_free(out)
+    ptr.free(src)
+    test.assert(libjpeg.tj_destroy(comp) == 0)
+
+@test
+fn test_a_buffer_the_library_reserved_is_released_by_the_library() [io, ffi]
+    test.case("tjAlloc, tjFree")
+    let buf = libjpeg.tj_alloc(1024)
+    test.assert(buf != 0)
+    // `ptr.free` releases what `ptr.alloc` reserved and nothing else.
+    libjpeg.tj_free(buf)
+
+@test
+fn test_bytes_that_are_not_a_jpeg_image_are_refused_and_named() [io, ffi]
+    test.case("tjGetErrorStr2, tjGetErrorCode")
+    let decomp = libjpeg.tj_init_decompress()
+    let junk = ptr.alloc(64)
+    ptr.write_bytes_buf(junk, bytes.from_str("this is not a JPEG image at all"))
+    let w = ptr.alloc_word()
+    let h = ptr.alloc_word()
+    let samp = ptr.alloc_word()
+    let cs = ptr.alloc_word()
+    let rc = libjpeg.tj_decompress_header3(decomp, junk, 31, w, h, samp, cs) as i32
+    test.assert(rc == -1)
+    // The failure names itself, and the code says how bad it was.
+    test.assert(str.len(ptr.read_str(libjpeg.tj_get_error_str2(decomp))) > 0)
+    test.assert(libjpeg.tj_get_error_code(decomp) == 1)
+    ptr.free(cs)
+    ptr.free(samp)
+    ptr.free(h)
+    ptr.free(w)
+    ptr.free(junk)
+    let _ = libjpeg.tj_destroy(decomp)
+
+@test
+fn test_the_scaling_factors_are_listed() [io, ffi]
+    test.case("tjGetScalingFactors")
+    let count = ptr.alloc_word()
+    let factors = libjpeg.tj_get_scaling_factors(count)
+    test.assert(factors != 0)
+    let n = ptr.read_word(count)
+    test.assert(n > 0)
+    // Each factor is a numerator and a denominator, four bytes each.
+    // One of them is 1/1, and the library lists it first.
+    test.assert(ptr.load_u8(factors) == 1)
+    test.assert(ptr.load_u8(factors + 4) == 1)
+    ptr.free(count)
+
+@test
+fn test_a_picture_converts_to_planes_and_back() [io, ffi]
+    test.case("tjEncodeYUV3, tjBufSizeYUV2, tjDecodeYUV3")
+    let comp = libjpeg.tj_init_compress()
+    let src = picture()
+    let planes_size = libjpeg.tj_buf_size_yuv2(WIDTH, PAD, HEIGHT, SAMP_444)
+    test.assert(planes_size > 0)
+    let planes = ptr.alloc(planes_size)
+    test.assert(libjpeg.tj_encode_yuv3(comp, src, WIDTH, 0, HEIGHT, PF_RGB, planes, PAD,
+                                       SAMP_444, 0) == 0)
+    let decomp = libjpeg.tj_init_decompress()
+    let back = ptr.alloc(WIDTH * HEIGHT * RGB_BYTES)
+    test.assert(libjpeg.tj_decode_yuv3(decomp, planes, PAD, SAMP_444, back, WIDTH, 0, HEIGHT,
+                                       PF_RGB, 0) == 0)
+    ptr.free(back)
+    ptr.free(planes)
+    ptr.free(src)
+    let _ = libjpeg.tj_destroy(decomp)
+    let _ = libjpeg.tj_destroy(comp)
+
+@test
+fn test_planes_compress_to_a_jpeg_image_and_back_to_planes() [io, ffi]
+    test.case("tjCompressFromYUV, tjDecompressToYUV2")
+    let comp = libjpeg.tj_init_compress()
+    let src = picture()
+    let planes_size = libjpeg.tj_buf_size_yuv2(WIDTH, PAD, HEIGHT, SAMP_444)
+    let planes = ptr.alloc(planes_size)
+    let _ = libjpeg.tj_encode_yuv3(comp, src, WIDTH, 0, HEIGHT, PF_RGB, planes, PAD, SAMP_444, 0)
+    let bound = libjpeg.tj_buf_size(WIDTH, HEIGHT, SAMP_444)
+    let out = libjpeg.tj_alloc(bound)
+    let buf_slot = ptr.alloc_word()
+    ptr.write_word(buf_slot, out)
+    let size_slot = ptr.alloc_word()
+    ptr.write_word(size_slot, bound)
+    test.assert(libjpeg.tj_compress_from_yuv(comp, planes, WIDTH, PAD, HEIGHT, SAMP_444,
+                                             buf_slot, size_slot, QUALITY,
+                                             FLAG_NOREALLOC) == 0)
+    let jpeg_size = ptr.read_word(size_slot)
+    test.assert(jpeg_size > 0)
+    let decomp = libjpeg.tj_init_decompress()
+    let back = ptr.alloc(planes_size)
+    test.assert(libjpeg.tj_decompress_to_yuv2(decomp, out, jpeg_size, back, WIDTH, PAD, HEIGHT,
+                                              0) == 0)
+    ptr.free(back)
+    ptr.free(size_slot)
+    ptr.free(buf_slot)
+    libjpeg.tj_free(out)
+    ptr.free(planes)
+    ptr.free(src)
+    let _ = libjpeg.tj_destroy(decomp)
+    let _ = libjpeg.tj_destroy(comp)
+
+@test
+fn test_a_plane_reports_its_own_size() [io, ffi]
+    test.case("tjPlaneWidth, tjPlaneHeight, tjPlaneSizeYUV")
+    // At 4:4:4 every plane is the size of the picture.
+    test.assert(libjpeg.tj_plane_width(0, WIDTH, SAMP_444) == WIDTH)
+    test.assert(libjpeg.tj_plane_height(0, HEIGHT, SAMP_444) == HEIGHT)
+    test.assert(libjpeg.tj_plane_width(1, WIDTH, SAMP_444) == WIDTH)
+    // At 4:2:0 the two chrominance planes are half as wide and half as
+    // tall as the luminance plane.
+    test.assert(libjpeg.tj_plane_width(1, WIDTH, SAMP_420) == WIDTH / 2)
+    test.assert(libjpeg.tj_plane_height(1, HEIGHT, SAMP_420) == HEIGHT / 2)
+    // A stride of 0 means the plane's own width.
+    test.assert(libjpeg.tj_plane_size_yuv(0, WIDTH, 0, HEIGHT, SAMP_444) == WIDTH * HEIGHT)
+    // Grayscale has no chrominance plane at all, and the answer is -1.
+    let missing = libjpeg.tj_plane_size_yuv(1, WIDTH, 0, HEIGHT, SAMP_GRAY) as i32
+    test.assert(missing == -1)
+
+@test
+fn test_a_grayscale_picture_compresses() [io, ffi]
+    test.case("tjCompress2 with TJPF_GRAY and TJSAMP_GRAY")
+    let comp = libjpeg.tj_init_compress()
+    let n = WIDTH * HEIGHT * GRAY_BYTES
+    let src = ptr.alloc(n)
+    for i in 0..n
+        ptr.write_i32(src + i, i % 251)
+    let bound = libjpeg.tj_buf_size(WIDTH, HEIGHT, SAMP_GRAY)
+    let out = libjpeg.tj_alloc(bound)
+    let buf_slot = ptr.alloc_word()
+    ptr.write_word(buf_slot, out)
+    let size_slot = ptr.alloc_word()
+    ptr.write_word(size_slot, bound)
+    test.assert(libjpeg.tj_compress2(comp, src, WIDTH, 0, HEIGHT, PF_GRAY, buf_slot, size_slot,
+                                     SAMP_GRAY, QUALITY, FLAG_NOREALLOC) == 0)
+    test.assert(ptr.read_word(size_slot) > 0)
+    ptr.free(size_slot)
+    ptr.free(buf_slot)
+    libjpeg.tj_free(out)
+    ptr.free(src)
+    let _ = libjpeg.tj_destroy(comp)

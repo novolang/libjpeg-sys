@@ -1,0 +1,210 @@
+// The C entry points of libturbojpeg, one novo-lang declaration each.
+//
+// THIS MODULE BINDS THE TURBOJPEG INTERFACE AND NOT THE LIBJPEG ONE.
+// libjpeg-turbo ships both, in two shared libraries.  Every libjpeg
+// entry point takes a `jpeg_compress_struct` or a
+// `jpeg_decompress_struct` the CALLER allocates, and
+// `jpeg_CreateCompress` takes its `sizeof` as an argument and refuses
+// any other number; the size is a build-time fact only the C header
+// knows, and the library's default error handler answers a wrong one
+// by printing a line and calling `exit`.  A novo-lang program has no
+// header, so it cannot make the first call of that API.  Every
+// TurboJPEG entry point below takes an opaque handle and scalars.
+//
+// A pointer is an `Int`: the C API hands out one opaque handle,
+// `tjhandle`, and this module carries it as the address the C library
+// returned.  Zero is the null pointer.
+//
+// A buffer is an address and a length, never a novo-lang value.  The
+// caller reserves the bytes with `ptr.alloc`, writes them with
+// `ptr.write_bytes_buf` and reads them back with `ptr.read_bytes_n`.
+//
+// An out-parameter is the address of a slot the caller owns.
+// `ptr.alloc_word` returns the address of an eight-byte slot, which is
+// the width TurboJPEG writes for an `unsigned char *` or an
+// `unsigned long`, and `ptr.read_word` reads it back.  The four
+// out-parameters of `tjDecompressHeader3` are FOUR BYTES each, so the
+// caller reserves a word for each and reads the low half back.
+//
+// A C `int` return arrives in 32 bits, and every call below answers -1
+// on failure.  Bind the value to a local with `as i32` before
+// comparing it with a negative number.
+
+// Create a TurboJPEG compressor.
+//
+// Answers the handle, or 0 on failure.  `tjDestroy` releases it.  The
+// handle holds the working memory, and a program that compresses many
+// images creates one and reuses it.
+pub @ffi(library = "turbojpeg", symbol = "tjInitCompress")
+fn tj_init_compress() -> Int [ffi]
+
+// Compress an image in memory into a JPEG image in memory.
+//
+// `src_buf` is the pixels, `width` and `height` their size, and
+// `pitch` the bytes from the start of one row to the start of the
+// next, where 0 means the rows are packed.  `pixel_format` is a
+// TurboJPEG pixel format: 0 is RGB, 6 is grayscale and 7 is RGBA.
+// `jpeg_buf` is the address of an eight-byte slot holding the address
+// of the output buffer, and `jpeg_size` the address of an eight-byte
+// slot the output length is written into.  `jpeg_subsamp` is the
+// chrominance subsampling, `jpeg_qual` the quality between 1 and 100,
+// and `flags` the bitwise or of the TurboJPEG flags.  Answers 0 on
+// success and -1 on failure.
+//
+// WITHOUT THE FLAG 1024 THE LIBRARY REALLOCATES THE OUTPUT BUFFER for
+// the caller, and the buffer it leaves behind must be released with
+// `tjFree` and not with `ptr.free`.
+pub @ffi(library = "turbojpeg", symbol = "tjCompress2")
+fn tj_compress2(handle: Int, src_buf: Int, width: Int, pitch: Int, height: Int, pixel_format: Int,
+                jpeg_buf: Int, jpeg_size: Int, jpeg_subsamp: Int, jpeg_qual: Int,
+                flags: Int) -> Int [ffi]
+
+// Get the largest JPEG image an image of that size can produce.
+//
+// A buffer of this size never overflows, whatever the picture and
+// whatever the quality.  `jpeg_subsamp` is the subsampling the
+// compression will use.
+pub @ffi(library = "turbojpeg", symbol = "tjBufSize")
+fn tj_buf_size(width: Int, height: Int, jpeg_subsamp: Int) -> Int [ffi]
+
+// Convert an image in memory into a planar YUV image in memory.
+//
+// The planes are written one after another into `dst_buf`, each row
+// padded out to a multiple of `pad` bytes.  This is the half of a
+// compression that converts the colours, without the half that
+// encodes them.  Answers 0 on success and -1 on failure.
+pub @ffi(library = "turbojpeg", symbol = "tjEncodeYUV3")
+fn tj_encode_yuv3(handle: Int, src_buf: Int, width: Int, pitch: Int, height: Int, pixel_format: Int,
+                  dst_buf: Int, pad: Int, subsamp: Int, flags: Int) -> Int [ffi]
+
+// Get the size of a planar YUV image with that padding.
+//
+// `pad` is the multiple each row of each plane is padded out to, and
+// it must be a power of two.
+pub @ffi(library = "turbojpeg", symbol = "tjBufSizeYUV2")
+fn tj_buf_size_yuv2(width: Int, pad: Int, height: Int, subsamp: Int) -> Int [ffi]
+
+// Compress a planar YUV image into a JPEG image in memory.
+//
+// The arguments after `src_buf` describe the planar image, and the
+// three after that are those of `tjCompress2`.  The colours are
+// already converted, so this is the encoding half alone.
+pub @ffi(library = "turbojpeg", symbol = "tjCompressFromYUV")
+fn tj_compress_from_yuv(handle: Int, src_buf: Int, width: Int, pad: Int, height: Int, subsamp: Int,
+                        jpeg_buf: Int, jpeg_size: Int, jpeg_qual: Int, flags: Int) -> Int [ffi]
+
+// Create a TurboJPEG decompressor.
+//
+// Answers the handle, or 0 on failure.  `tjDestroy` releases it.
+pub @ffi(library = "turbojpeg", symbol = "tjInitDecompress")
+fn tj_init_decompress() -> Int [ffi]
+
+// Read the header of a JPEG image in memory.
+//
+// `width`, `height`, `jpeg_subsamp` and `jpeg_colorspace` are the
+// addresses of four slots, each holding a FOUR-BYTE integer the
+// library writes.  Answers 0 on success and -1 when the bytes are not
+// a JPEG image.  This is the call that sizes the buffer the
+// decompression needs.
+pub @ffi(library = "turbojpeg", symbol = "tjDecompressHeader3")
+fn tj_decompress_header3(handle: Int, jpeg_buf: Int, jpeg_size: Int, width: Int, height: Int,
+                         jpeg_subsamp: Int, jpeg_colorspace: Int) -> Int [ffi]
+
+// Decompress a JPEG image in memory into an image in memory.
+//
+// `width` and `height` are the size the picture is wanted at, and 0
+// for either means the size the header reports.  A different size must
+// be one of the scaling factors `tjGetScalingFactors` lists, applied
+// to the header's size.  `pitch` is the bytes from the start of one
+// row to the start of the next, where 0 means packed.  Answers 0 on
+// success and -1 on failure.
+pub @ffi(library = "turbojpeg", symbol = "tjDecompress2")
+fn tj_decompress2(handle: Int, jpeg_buf: Int, jpeg_size: Int, dst_buf: Int, width: Int, pitch: Int,
+                  height: Int, pixel_format: Int, flags: Int) -> Int [ffi]
+
+// Decompress a JPEG image into a planar YUV image in memory.
+//
+// The planes are written one after another, each row padded out to a
+// multiple of `pad` bytes.  This is the decoding half of a
+// decompression, without the half that converts the colours.
+pub @ffi(library = "turbojpeg", symbol = "tjDecompressToYUV2")
+fn tj_decompress_to_yuv2(handle: Int, jpeg_buf: Int, jpeg_size: Int, dst_buf: Int, width: Int,
+                         pad: Int, height: Int, flags: Int) -> Int [ffi]
+
+// Convert a planar YUV image in memory into an image in memory.
+//
+// The colour conversion half alone, and the counterpart of
+// `tjEncodeYUV3`.
+pub @ffi(library = "turbojpeg", symbol = "tjDecodeYUV3")
+fn tj_decode_yuv3(handle: Int, src_buf: Int, pad: Int, subsamp: Int, dst_buf: Int, width: Int,
+                  pitch: Int, height: Int, pixel_format: Int, flags: Int) -> Int [ffi]
+
+// Get the scaling factors the decompressor can decompress at.
+//
+// `num_scaling_factors` is the address of a slot holding a four-byte
+// count the library writes.  The answer is the address of an array the
+// library owns, of that many pairs of four-byte integers: a numerator
+// and then a denominator, eight bytes to the pair.  A size that is not
+// the header's size times one of these pairs is refused.
+pub @ffi(library = "turbojpeg", symbol = "tjGetScalingFactors")
+fn tj_get_scaling_factors(num_scaling_factors: Int) -> Int [ffi]
+
+// Get the size of one plane of a planar YUV image.
+//
+// `component_id` is 0 for the luminance plane and 1 or 2 for the two
+// chrominance planes.  `stride` is the bytes from the start of one row
+// of the plane to the start of the next, where 0 means the plane's own
+// width.  Answers -1 for a component that subsampling leaves out.
+pub @ffi(library = "turbojpeg", symbol = "tjPlaneSizeYUV")
+fn tj_plane_size_yuv(component_id: Int, width: Int, stride: Int, height: Int,
+                     subsamp: Int) -> Int [ffi]
+
+// Get the width of one plane of a planar YUV image.
+//
+// The chrominance planes are narrower than the luminance plane
+// whenever the subsampling is not 4:4:4.
+pub @ffi(library = "turbojpeg", symbol = "tjPlaneWidth")
+fn tj_plane_width(component_id: Int, width: Int, subsamp: Int) -> Int [ffi]
+
+// Get the height of one plane of a planar YUV image.
+pub @ffi(library = "turbojpeg", symbol = "tjPlaneHeight")
+fn tj_plane_height(component_id: Int, height: Int, subsamp: Int) -> Int [ffi]
+
+// Reserve a buffer the library may reallocate.
+//
+// `tjCompress2` without the flag 1024 reallocates the buffer it is
+// given, so the buffer must be one the library made.  Answers the
+// address, or 0 when the allocation failed.
+pub @ffi(library = "turbojpeg", symbol = "tjAlloc")
+fn tj_alloc(bytes: Int) -> Int [ffi]
+
+// Release a buffer the library reserved or reallocated.
+//
+// This is the only correct way to release such a buffer: `ptr.free`
+// releases what `ptr.alloc` reserved and nothing else.
+pub @ffi(library = "turbojpeg", symbol = "tjFree")
+fn tj_free(buffer: Int) [ffi]
+
+// Release a compressor, decompressor or transformer.
+//
+// Answers 0 on success and -1 on failure.  Releasing the null address
+// is a failure and not a crash.
+pub @ffi(library = "turbojpeg", symbol = "tjDestroy")
+fn tj_destroy(handle: Int) -> Int [ffi]
+
+// Get the text for the last failure on a handle.
+//
+// The answer is the address of a string the handle owns, and it is
+// replaced by the next failure on the same handle.  Passing 0 answers
+// the last failure that belonged to no handle.
+pub @ffi(library = "turbojpeg", symbol = "tjGetErrorStr2")
+fn tj_get_error_str2(handle: Int) -> Int [ffi]
+
+// Get the severity of the last failure on a handle.
+//
+// Answers 0 when the last call only warned, which means it produced
+// output that may still be usable, and 1 when it failed outright.  A
+// call that answered -1 with a code of 0 recovered from a corrupt
+// image.
+pub @ffi(library = "turbojpeg", symbol = "tjGetErrorCode")
+fn tj_get_error_code(handle: Int) -> Int [ffi]
