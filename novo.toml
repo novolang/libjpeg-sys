@@ -1,13 +1,12 @@
 [package]
 name        = "libjpeg-sys"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "Bindings over libturbojpeg, the TurboJPEG interface of libjpeg-turbo: the compressor, the decompressor with its header reader and scaling factors, the planar YUV conversions, the buffer allocator and the error reporting, one declaration per C entry point."
 license     = "Apache-2.0"
 
-# NOT a `0.0.x` draft.  An interface release is the shape whose every
-# `pub fn` body is a `todo()`, and every `pub fn` here is an `@ffi`
-# declaration with no body at all — `novo pkg publish` reads that as a
-# release with bodies and refuses a `0.0.x` version for it.
+# `experimental` because no program outside this repository has used
+# the package yet, and the tests exercise the entry points rather than
+# a consumer's use of them.
 stability   = "experimental"
 
 # `sys`: the layer for a package that binds one C library and decides
@@ -17,18 +16,20 @@ layer       = "sys"
 
 category    = "bindings"
 
-# The one C library.  libjpeg-turbo ships two interfaces in two shared
-# libraries: `libjpeg.so` is the libjpeg API, and `libturbojpeg.so` is
-# the TurboJPEG API.  THIS PACKAGE WRAPS THE TURBOJPEG ONE, AND IT IS
-# THE ONLY ONE OF THE TWO A BINDING CAN CALL.  Every libjpeg entry
-# point takes a `jpeg_compress_struct` or a `jpeg_decompress_struct`
-# the CALLER allocates, `jpeg_CreateCompress` takes its `sizeof` as an
-# argument, and the size is a number only the header knows: pass the
-# wrong one and the library's default error handler prints
-# "JPEG parameter struct mismatch" and calls `exit`.  A novo-lang
+# The one C library.  libjpeg-turbo ships two C interfaces in two
+# shared libraries: `libjpeg.so` carries the libjpeg API, and
+# `libturbojpeg.so` carries the TurboJPEG API.  This package binds the
+# TurboJPEG one, which is the only one of the two a novo-lang program
+# can call.  The libjpeg entry points work on a `jpeg_compress_struct`
+# or a `jpeg_decompress_struct` the caller allocates, and
+# `jpeg_CreateCompress` takes the library version and the structure's
+# size as arguments and refuses any other numbers.  Both are
+# build-time facts only the C header knows, and the library's default
+# error handler answers a wrong one by printing a line such as
+# "JPEG parameter struct mismatch" and calling `exit`.  A novo-lang
 # program has no header, so it cannot make the first call of that API.
-# Every TurboJPEG entry point takes an opaque handle and scalars.
-# The README's "What is not included" section says so again.
+# Every TurboJPEG entry point takes an opaque handle and scalars.  The
+# README's "What is not included" section says so again.
 wraps       = "libturbojpeg"
 
 tags        = ["ffi", "jpeg", "turbojpeg", "libjpeg-turbo", "image", "codec", "bindings"]

@@ -2,29 +2,24 @@
 
 JPEG is a lossy compression method for photographs, specified in
 ITU-T T.81. libjpeg-turbo is the reference implementation most
-programs use, and it ships two C interfaces: the libjpeg API, which is
+programs use, and it publishes two C APIs: the libjpeg API, which is
 the original one from the Independent JPEG Group, and the
 [TurboJPEG API](https://libjpeg-turbo.org/Documentation/Documentation),
 which compresses and decompresses a whole image in one call. This
 package declares twenty of the TurboJPEG entry points to novo-lang,
 one declaration each.
 
-**Status: a binding, not a port.** Every function in this package is a
-declaration of a function in libturbojpeg. The package contains no
-logic of its own, and it does nothing without the C library installed.
-
-**This package binds the TurboJPEG API, and the libjpeg API is not
-here.** Every libjpeg entry point takes a state structure the caller
-allocates, and the first call takes the structure's size as an
-argument and refuses any number but the library's own. That size is a
-build-time fact only the C header knows, and a program that gets it
-wrong is ended by the library rather than told. The section "What is
-not included" gives the measurement.
-
-**Unverified.** The machine this package was written on has no
-libturbojpeg installed, so the test suite has never linked and no test
-in it has ever run. `novo pkg build` type-checks the declarations and
-is green.
+Every function here is a declaration of a function in libturbojpeg.
+The package contains no logic of its own, and it does nothing without
+the C library installed. The twenty calls cover the compressor, the
+decompressor, the planar YUV conversions, the buffer allocator and the
+error reporting. The libjpeg API is not among them: every one of its
+entry points works on a state structure the caller allocates, and the
+first call takes the structure's size as an argument and refuses any
+number but the library's own. That size is a build-time fact only the
+C header knows, and a program that gets it wrong is ended by the
+library rather than told. The section "What is not included" gives the
+measurement.
 
 ## What it is
 
@@ -78,9 +73,9 @@ sudo apt install libturbojpeg0-dev
 On macOS the Homebrew formula is `jpeg-turbo`. On other systems the
 library builds from the libjpeg-turbo source with CMake.
 
-**`libjpeg.so` is not enough.** A system may carry libjpeg-turbo's
-libjpeg API and not its TurboJPEG one, which is a separate shared
-library in a separate package. This package needs `libturbojpeg.so`.
+A system may carry libjpeg-turbo's libjpeg API and not its TurboJPEG
+one, which is a separate shared library in a separate package. This
+package needs `libturbojpeg.so`, and `libjpeg.so` alone is not enough.
 
 ## Example
 
@@ -95,8 +90,9 @@ fn main() [io, ffi]
         println("no compressor")
         return
 
-    // A grey rectangle, 32 by 16 pixels, three bytes each.
-    let src = ptr.alloc(32 * 16 * 3)
+    // A grey rectangle, 32 by 16 pixels, three bytes each. The three
+    // bytes beyond it are the reach of the last `ptr.write_i32`.
+    let src = ptr.alloc(32 * 16 * 3 + 3)
     for i in 0..32 * 16 * 3
         ptr.write_i32(src + i, 128)
 
@@ -131,10 +127,11 @@ fn main() [io, ffi]
     let _ = libjpeg.tj_destroy(comp)
 ```
 
-The example is fenced as an illustration rather than a compiled block
-because `novo doc` compiles the blocks in documentation comments and not
-the ones in this file. The same calls are in
-`tests/libjpeg_tests.nv`, where the round trip is asserted.
+The fence reads `novo ignore`, so `novo doc` lists the example and does
+not compile it. A compiled block is linked against libturbojpeg, and
+the link fails on a machine where that library is not installed. The
+same calls are in `tests/libjpeg_tests.nv`, where the round trip is
+asserted.
 
 ## What the package contains
 
@@ -169,13 +166,15 @@ to decompress at all. It reads a few bytes and decompresses nothing.
 
 1. **A pointer is an `Int`, and zero is null.** The handle the C
    library returns arrives as the address it returned.
-2. **Every call answers -1 on failure, and the answer is a C `int`.**
-   Write `as i32` before comparing it with -1.
+2. **A call that answers a number answers -1 on failure.** A C `int`
+   arrives in 32 bits, so write `as i32` before comparing the answer
+   with -1. `tjInitCompress`, `tjInitDecompress` and `tjAlloc` answer
+   an address, and their failure is 0.
 3. **A failure names itself on its handle.** `tjGetErrorStr2` answers
    the text of the last failure on that handle, and `tjGetErrorCode`
    answers 0 when the call only warned and 1 when it failed outright.
-   **A -1 with a code of 0 means the call produced output anyway**,
-   which is what a corrupt but readable image gives.
+   A -1 with a code of 0 means the call produced output anyway, which
+   is what a corrupt but readable image gives.
 4. **The output buffer is the library's unless you say otherwise.**
    `tjCompress2` without the flag 1024 reallocates the buffer it is
    given. Reserve it with `tjAlloc` and release it with `tjFree`, never
@@ -188,17 +187,21 @@ to decompress at all. It reads a few bytes and decompresses nothing.
    holds the address of the output buffer, and the second holds its
    capacity going in and the length coming out.
 7. **The four out-parameters of `tjDecompressHeader3` are four bytes
-   each.** `ptr.alloc_word` reserves eight with every byte zero, so
-   `ptr.read_word` reads the value back with no other byte in the way.
+   each.** `ptr.alloc_word` reserves eight with every byte zero, so on
+   a little-endian machine `ptr.read_word` reads the value back with no
+   other byte in the way.
 8. **A pitch of 0 means the rows are packed**, which is width times the
    bytes a pixel takes.
-9. **A width or height of 0 in `tjDecompress2` means the header's
-   size.** Any other size must be the header's size scaled by one of
-   the factors `tjGetScalingFactors` lists, and a size that is not is
-   refused.
+9. **A width or height of 0 in `tjDecompress2` means that side does not
+   limit the size.** The decompressor scales the header's size by the
+   largest factor from `tjGetScalingFactors` whose result fits within
+   both sides, so 0 for both gives the header's size. The picture
+   written is that scaled size, which can be smaller than the size
+   asked for, and the call fails when no factor is small enough to fit.
 10. **A scaling factor is two four-byte integers**, a numerator and
     then a denominator, eight bytes to the pair, in an array the
-    library owns.
+    library owns. The list holds 1/1, and the factors this
+    implementation supports run from 2/1 down to 1/8.
 11. **The pixel formats are numbers**, because the C header spells
     them as an enumeration.
 
@@ -241,21 +244,21 @@ to decompress at all. It reads a few bytes and decompresses nothing.
 
 ## What is not included
 
-- **The libjpeg API.** libjpeg-turbo's other interface —
+- **The libjpeg API.** libjpeg-turbo's other C API —
   `jpeg_CreateCompress`, `jpeg_start_compress`, `jpeg_write_scanlines`,
-  `jpeg_read_header` and the rest — takes a `jpeg_compress_struct` or a
-  `jpeg_decompress_struct` that the caller allocates.
-  `jpeg_CreateCompress` takes the structure's size as an argument and
-  compares it with the library's own, and the library's own is a
-  build-time fact that only the C header records. On the machine this
-  package was written on, passing 600 answered
-  `JPEG parameter struct mismatch: library thinks size is 584, caller
-  expects 600` and ended the process, because a mismatch reaches the
-  error manager's `error_exit`, whose default calls `exit`. The error
-  manager cannot be replaced either: it is a structure of C function
-  pointers, and a novo-lang function is not one. Without the header a
-  program cannot make the first call of that API, and so it can make
-  none of them.
+  `jpeg_read_header` and the rest — works on a `jpeg_compress_struct`
+  or a `jpeg_decompress_struct` that the caller allocates.
+  `jpeg_CreateCompress` takes the library version and the structure's
+  size as arguments and compares each with the library's own, and both
+  numbers are build-time facts that only the C header records. On the
+  machine this package was written on, passing 600 for the size
+  answered `JPEG parameter struct mismatch: library thinks size is 584,
+  caller expects 600` and ended the process, because a mismatch reaches
+  the error manager's `error_exit`, whose default calls `exit`. The
+  error manager cannot be replaced either: it is a structure of C
+  function pointers the caller installs before the first call, and a
+  novo-lang function is not one. Without the header a program cannot
+  make the first call of that API, and so it can make none of them.
 - **`tjTransform` and `tjInitTransform`.** The lossless rotation, flip
   and crop take an array of `tjtransform` structures, one field of
   which is a C function pointer for a filter. The field may be left
@@ -286,8 +289,8 @@ hand-written vector code is for.
 
 ## Tests
 
-`tests/libjpeg_tests.nv` holds eight tests written against the
-signatures:
+`tests/libjpeg_tests.nv` holds eight tests over the twenty entry
+points:
 
 ```
 novo test tests/libjpeg_tests.nv
@@ -298,10 +301,9 @@ installed. Without it the link fails, naming `-lturbojpeg`.
 `novo pkg build` type-checks the declarations and needs nothing
 installed.
 
-**Unverified: the suite has never linked on the staging machine.** The
-machine carried `libjpeg.so.8` and no libturbojpeg at all, so no test
-in this suite has ever been run. The sources compile; the run is the
-step nobody has seen.
+The machine this package was written on has no libturbojpeg, so the
+suite has not linked there and no test in it has run there. The
+sources compile, and the link is the step that fails.
 
 Every test works in memory over a picture the suite draws itself, so
 the suite reads and writes nothing and needs no privileges. The suite
@@ -309,24 +311,11 @@ asserts that a 32-by-16 picture compresses at quality 90 and 4:2:0 into
 a buffer no larger than `tjBufSize`, that its header reports the size,
 the subsampling and the YCbCr colour space it was written with, that
 bytes which are not a JPEG image answer -1 with a named error and a
-code of 1, that the scaling factors list begins with 1/1, that a
-picture converts to planes and back, that planes compress to a JPEG
-image and decompress to planes again, that a 4:2:0 chrominance plane is
-half as wide and half as tall as its picture, that grayscale has no
+code of 1, that the list of scaling factors holds 1/1, that a picture
+converts to planes and back, that planes compress to a JPEG image and
+decompress to planes again, that a 4:2:0 chrominance plane is half as
+wide and half as tall as its picture, that grayscale has no
 chrominance plane at all, and that a grayscale picture compresses.
-
-## Implementation status
-
-| Group | State |
-| --- | --- |
-| The compressor | Complete, unverified. |
-| The decompressor | Complete, unverified. |
-| The planar helpers | Complete, unverified. |
-| The buffers | Complete, unverified. |
-| The instance and the errors | Complete, unverified. |
-| The libjpeg API | Absent. Its first call needs a structure size only the C header knows. |
-| Lossless transforms | Absent. Their options structure carries a C function pointer field. |
-| The TurboJPEG 3 API | Absent. It arrived in libjpeg-turbo 3.0. |
 
 ## Licence
 

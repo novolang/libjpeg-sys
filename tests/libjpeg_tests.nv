@@ -43,7 +43,10 @@ const PAD: Int = 4
 // result is not a single colour.
 fn picture() -> Int
     let n = WIDTH * HEIGHT * RGB_BYTES
-    let buf = ptr.alloc(n)
+    // `ptr.write_i32` writes four bytes, so the write at the last byte
+    // of the picture reaches three bytes past it.  The buffer carries
+    // those three bytes.
+    let buf = ptr.alloc(n + 3)
     for i in 0..n
         ptr.write_i32(buf + i, i % 251)
     return buf
@@ -137,10 +140,14 @@ fn test_the_scaling_factors_are_listed() [io, ffi]
     test.assert(factors != 0)
     let n = ptr.read_word(count)
     test.assert(n > 0)
-    // Each factor is a numerator and a denominator, four bytes each.
-    // One of them is 1/1, and the library lists it first.
-    test.assert(ptr.load_u8(factors) == 1)
-    test.assert(ptr.load_u8(factors + 4) == 1)
+    // Each factor is a numerator and a denominator, four bytes each,
+    // eight bytes to the pair.  The list holds 1/1, the factor that
+    // decompresses a picture at the size its header reports.
+    var identity = false
+    for i in 0..n
+        if ptr.load_u8(factors + i * 8) == 1 and ptr.load_u8(factors + i * 8 + 4) == 1
+            identity = true
+    test.assert(identity)
     ptr.free(count)
 
 @test
@@ -217,7 +224,9 @@ fn test_a_grayscale_picture_compresses() [io, ffi]
     test.case("tjCompress2 with TJPF_GRAY and TJSAMP_GRAY")
     let comp = libjpeg.tj_init_compress()
     let n = WIDTH * HEIGHT * GRAY_BYTES
-    let src = ptr.alloc(n)
+    // Three bytes beyond the picture, the reach of the last
+    // `ptr.write_i32`, as in `picture`.
+    let src = ptr.alloc(n + 3)
     for i in 0..n
         ptr.write_i32(src + i, i % 251)
     let bound = libjpeg.tj_buf_size(WIDTH, HEIGHT, SAMP_GRAY)

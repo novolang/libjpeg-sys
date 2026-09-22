@@ -1,15 +1,16 @@
 // The C entry points of libturbojpeg, one novo-lang declaration each.
 //
-// THIS MODULE BINDS THE TURBOJPEG INTERFACE AND NOT THE LIBJPEG ONE.
-// libjpeg-turbo ships both, in two shared libraries.  Every libjpeg
-// entry point takes a `jpeg_compress_struct` or a
-// `jpeg_decompress_struct` the CALLER allocates, and
-// `jpeg_CreateCompress` takes its `sizeof` as an argument and refuses
-// any other number; the size is a build-time fact only the C header
-// knows, and the library's default error handler answers a wrong one
-// by printing a line and calling `exit`.  A novo-lang program has no
-// header, so it cannot make the first call of that API.  Every
-// TurboJPEG entry point below takes an opaque handle and scalars.
+// This module binds the TurboJPEG API and not the libjpeg API.
+// libjpeg-turbo ships the two in two shared libraries.  The libjpeg
+// entry points work on a `jpeg_compress_struct` or a
+// `jpeg_decompress_struct` the caller allocates, and
+// `jpeg_CreateCompress` takes the library version and the structure's
+// size as arguments and refuses any other numbers.  Both are
+// build-time facts only the C header knows, and the library's default
+// error handler answers a wrong one by printing a line and calling
+// `exit`.  A novo-lang program has no header, so it cannot make the
+// first call of that API.  Every TurboJPEG entry point below takes an
+// opaque handle and scalars.
 //
 // A pointer is an `Int`: the C API hands out one opaque handle,
 // `tjhandle`, and this module carries it as the address the C library
@@ -23,12 +24,15 @@
 // `ptr.alloc_word` returns the address of an eight-byte slot, which is
 // the width TurboJPEG writes for an `unsigned char *` or an
 // `unsigned long`, and `ptr.read_word` reads it back.  The four
-// out-parameters of `tjDecompressHeader3` are FOUR BYTES each, so the
-// caller reserves a word for each and reads the low half back.
+// out-parameters of `tjDecompressHeader3` are four bytes each, so the
+// caller reserves a word for each and reads the low half back on a
+// little-endian machine.
 //
-// A C `int` return arrives in 32 bits, and every call below answers -1
-// on failure.  Bind the value to a local with `as i32` before
-// comparing it with a negative number.
+// A call that answers a number answers -1 on failure.  A C `int` is
+// 32 bits wide, so bind the answer to a local with `as i32` before
+// comparing it with a negative number.  The three calls that answer
+// an address, `tjInitCompress`, `tjInitDecompress` and `tjAlloc`,
+// answer 0 on failure instead.
 
 // Create a TurboJPEG compressor.
 //
@@ -46,14 +50,15 @@ fn tj_init_compress() -> Int [ffi]
 // TurboJPEG pixel format: 0 is RGB, 6 is grayscale and 7 is RGBA.
 // `jpeg_buf` is the address of an eight-byte slot holding the address
 // of the output buffer, and `jpeg_size` the address of an eight-byte
-// slot the output length is written into.  `jpeg_subsamp` is the
-// chrominance subsampling, `jpeg_qual` the quality between 1 and 100,
-// and `flags` the bitwise or of the TurboJPEG flags.  Answers 0 on
-// success and -1 on failure.
+// slot.  The caller writes the buffer's capacity into that slot, and
+// the library writes the length of the JPEG image back into it.
+// `jpeg_subsamp` is the chrominance subsampling, `jpeg_qual` the
+// quality between 1 and 100, and `flags` the bitwise or of the
+// TurboJPEG flags.  Answers 0 on success and -1 on failure.
 //
-// WITHOUT THE FLAG 1024 THE LIBRARY REALLOCATES THE OUTPUT BUFFER for
-// the caller, and the buffer it leaves behind must be released with
-// `tjFree` and not with `ptr.free`.
+// Without the flag 1024 the library reallocates the output buffer for
+// the caller.  The buffer it leaves behind is released with `tjFree`
+// and not with `ptr.free`.
 pub @ffi(library = "turbojpeg", symbol = "tjCompress2")
 fn tj_compress2(handle: Int, src_buf: Int, width: Int, pitch: Int, height: Int, pixel_format: Int,
                 jpeg_buf: Int, jpeg_size: Int, jpeg_subsamp: Int, jpeg_qual: Int,
@@ -102,7 +107,7 @@ fn tj_init_decompress() -> Int [ffi]
 // Read the header of a JPEG image in memory.
 //
 // `width`, `height`, `jpeg_subsamp` and `jpeg_colorspace` are the
-// addresses of four slots, each holding a FOUR-BYTE integer the
+// addresses of four slots, each holding a four-byte integer the
 // library writes.  Answers 0 on success and -1 when the bytes are not
 // a JPEG image.  This is the call that sizes the buffer the
 // decompression needs.
@@ -113,11 +118,14 @@ fn tj_decompress_header3(handle: Int, jpeg_buf: Int, jpeg_size: Int, width: Int,
 // Decompress a JPEG image in memory into an image in memory.
 //
 // `width` and `height` are the size the picture is wanted at, and 0
-// for either means the size the header reports.  A different size must
-// be one of the scaling factors `tjGetScalingFactors` lists, applied
-// to the header's size.  `pitch` is the bytes from the start of one
-// row to the start of the next, where 0 means packed.  Answers 0 on
-// success and -1 on failure.
+// for either means that side does not limit the size.  The
+// decompressor scales the header's size by the largest of the factors
+// `tjGetScalingFactors` lists whose result fits within both sides, so
+// 0 for both gives the header's size.  The picture written is that
+// scaled size, and the destination buffer holds it.  The call fails
+// when no factor is small enough to fit.  `pitch` is the bytes from
+// the start of one row to the start of the next, where 0 means
+// packed.  Answers 0 on success and -1 on failure.
 pub @ffi(library = "turbojpeg", symbol = "tjDecompress2")
 fn tj_decompress2(handle: Int, jpeg_buf: Int, jpeg_size: Int, dst_buf: Int, width: Int, pitch: Int,
                   height: Int, pixel_format: Int, flags: Int) -> Int [ffi]
@@ -144,8 +152,9 @@ fn tj_decode_yuv3(handle: Int, src_buf: Int, pad: Int, subsamp: Int, dst_buf: In
 // `num_scaling_factors` is the address of a slot holding a four-byte
 // count the library writes.  The answer is the address of an array the
 // library owns, of that many pairs of four-byte integers: a numerator
-// and then a denominator, eight bytes to the pair.  A size that is not
-// the header's size times one of these pairs is refused.
+// and then a denominator, eight bytes to the pair.  The list holds the
+// factor 1/1, and the factors this implementation supports run from
+// 2/1 down to 1/8.  `tjDecompress2` picks one of them.
 pub @ffi(library = "turbojpeg", symbol = "tjGetScalingFactors")
 fn tj_get_scaling_factors(num_scaling_factors: Int) -> Int [ffi]
 
@@ -196,7 +205,8 @@ fn tj_destroy(handle: Int) -> Int [ffi]
 //
 // The answer is the address of a string the handle owns, and it is
 // replaced by the next failure on the same handle.  Passing 0 answers
-// the last failure that belonged to no handle.
+// the last failure that belonged to no handle, which is not safe to
+// read from more than one thread.
 pub @ffi(library = "turbojpeg", symbol = "tjGetErrorStr2")
 fn tj_get_error_str2(handle: Int) -> Int [ffi]
 
